@@ -29,5 +29,16 @@ export class AuthRepoPg extends AuthRepo {
     );
     return result.rows[0]?.role ?? null;
   }
+
+  async getActiveSuperadmin(client, userId) {
+    const result = await client.query(
+      `select id, user_id, is_active
+       from superadmins
+       where user_id = $1 and is_active = true
+       limit 1`,
+      [userId]
+    );
+    return result.rows[0] || null;
+  }
 }
 

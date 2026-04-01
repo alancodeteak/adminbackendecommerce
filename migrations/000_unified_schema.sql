@@ -9,9 +9,27 @@ CREATE TABLE IF NOT EXISTS shops (
   name TEXT NOT NULL,
   custom_domain TEXT UNIQUE,
   is_active BOOLEAN NOT NULL DEFAULT true,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'blocked', 'deleted')),
+  created_by_superadmin_user_id UUID,
+  approved_at TIMESTAMPTZ,
+  blocked_reason TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Link shops.created_by_superadmin_user_id to users (optional).
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'shops_created_by_superadmin_user_id_fkey'
+  ) THEN
+    ALTER TABLE shops
+      ADD CONSTRAINT shops_created_by_superadmin_user_id_fkey
+      FOREIGN KEY (created_by_superadmin_user_id) REFERENCES users(id) ON DELETE SET NULL;
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS categories (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -57,6 +75,15 @@ CREATE TABLE IF NOT EXISTS users (
   email TEXT UNIQUE,
   phone TEXT UNIQUE,
   password_hash TEXT,
+  is_active BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Platform identity (superadmins) is separated from tenant staff membership.
+-- A superadmin is a user with platform-level capabilities.
+CREATE TABLE IF NOT EXISTS superadmins (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
   is_active BOOLEAN NOT NULL DEFAULT true,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );

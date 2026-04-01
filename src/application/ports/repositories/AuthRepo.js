@@ -13,5 +13,10 @@ export class AuthRepo {
   async getActiveStaffRole(_client, _shopId, _userId) {
     throw new Error("Not implemented");
   }
+
+  // eslint-disable-next-line no-unused-vars
+  async getActiveSuperadmin(_client, _userId) {
+    throw new Error("Not implemented");
+  }
 }
 

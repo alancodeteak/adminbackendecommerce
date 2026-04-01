@@ -6,3 +6,8 @@ export const loginBodySchema = z.object({
   shopSlug: z.string().min(1)
 });
 
+export const superadminLoginBodySchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(6)
+});
+
