@@ -5,25 +5,37 @@ import { signAccessToken } from "../../../../infra/auth/jwt.js";
 
 export function loginStaff({ authRepo }) {
   return async function execute(client, { email, password, shopSlug }) {
-    const shop = await authRepo.getShopBySlug(client, shopSlug);
-    if (!shop || !shop.is_active || shop.status !== "active") throw new AuthError("Invalid shop");
+    const perf = client.perf;
+    const ctx = perf
+      ? await perf.measure("db_ms", async () => {
+          return await authRepo.getStaffLoginContextByShopSlugAndEmail(client, { shopSlug, email });
+        })
+      : await authRepo.getStaffLoginContextByShopSlugAndEmail(client, { shopSlug, email });
 
-    const user = await authRepo.getUserByEmail(client, email);
-    if (!user || !user.is_active) throw new AuthError("Invalid credentials");
+    if (!ctx || !ctx.shop_is_active || ctx.shop_status !== "active") throw new AuthError("Invalid shop");
+    if (!ctx.user_is_active) throw new AuthError("Invalid credentials");
+    if (!ctx.staff_role || !ctx.staff_is_active || ctx.staff_status !== "active") {
+      throw new ForbiddenError("Not a staff member for this shop");
+    }
 
-    const ok = await verifyPassword(password, user.password_hash);
+    const ok = perf
+      ? await perf.measure("password_verify_ms", async () => {
+          return await verifyPassword(password, ctx.password_hash);
+        })
+      : await verifyPassword(password, ctx.password_hash);
     if (!ok) throw new AuthError("Invalid credentials");
 
-    const role = await authRepo.getActiveStaffRole(client, shop.id, user.id);
-    if (!role) throw new ForbiddenError("Not a staff member for this shop");
-
-    const accessToken = signAccessToken({ userId: user.id, shopId: shop.id, role });
+    const accessToken = perf
+      ? await perf.measure("jwt_sign_ms", async () => {
+          return signAccessToken({ userId: ctx.user_id, shopId: ctx.shop_id, role: ctx.staff_role });
+        })
+      : signAccessToken({ userId: ctx.user_id, shopId: ctx.shop_id, role: ctx.staff_role });
 
     return {
       accessToken,
-      user: { id: user.id, email: user.email },
-      shop: { id: shop.id, slug: shop.slug, name: shop.name },
-      role
+      user: { id: ctx.user_id, email: ctx.email },
+      shop: { id: ctx.shop_id, slug: ctx.shop_slug, name: ctx.shop_name },
+      role: ctx.staff_role
     };
   };
 }

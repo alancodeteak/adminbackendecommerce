@@ -1,6 +1,37 @@
 import { AuthRepo } from "../../../application/ports/repositories/AuthRepo.js";
 
 export class AuthRepoPg extends AuthRepo {
+  async getStaffLoginContextByShopSlugAndEmail(client, { shopSlug, email }) {
+    const result = await client.query(
+      `select
+        s.id as shop_id,
+        s.slug as shop_slug,
+        s.name as shop_name,
+        s.is_active as shop_is_active,
+        s.status as shop_status,
+        u.id as user_id,
+        u.email,
+        u.password_hash,
+        u.is_active as user_is_active,
+        ss.role as staff_role,
+        ss.is_active as staff_is_active,
+        ss.status as staff_status
+       from shops s
+       cross join lateral (
+         select set_config('app.current_shop_id', s.id::text, true)
+       ) as tenant
+       join shop_staff ss
+         on ss.shop_id = s.id
+       join users u
+         on u.id = ss.user_id
+       where s.slug = $1
+         and u.email = $2
+       limit 1`,
+      [shopSlug, email]
+    );
+    return result.rows[0] || null;
+  }
+
   async getShopBySlug(client, slug) {
     const result = await client.query(
       "select id, slug, name, is_active, status from shops where slug = $1 limit 1",

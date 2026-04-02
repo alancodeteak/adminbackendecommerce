@@ -1,5 +1,10 @@
 export class AuthRepo {
   // eslint-disable-next-line no-unused-vars
+  async getStaffLoginContextByShopSlugAndEmail(_client, _params) {
+    throw new Error("Not implemented");
+  }
+
+  // eslint-disable-next-line no-unused-vars
   async getShopBySlug(_client, _slug) {
     throw new Error("Not implemented");
   }

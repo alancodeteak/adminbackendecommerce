@@ -4,6 +4,7 @@ import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import { env } from "../config/env.js";
 import { requestLogger } from "../infra/logging/requestLogger.js";
+import { createPerf } from "../infra/perf/perf.js";
 import { buildRoutes } from "./routes.js";
 import { notFound } from "../interface/http/middleware/notFound.js";
 import { errorHandler } from "../interface/http/middleware/errorHandler.js";
@@ -21,6 +22,10 @@ export function createServer() {
     })
   );
   app.use(express.json({ limit: "1mb" }));
+  app.use((req, _res, next) => {
+    req.perf = createPerf();
+    next();
+  });
 
   app.use(
     rateLimit({

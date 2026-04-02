@@ -19,3 +19,12 @@ export async function withTx(fn) {
   }
 }
 
+export async function withClient(fn) {
+  const client = await pool.connect();
+  try {
+    return await fn(client);
+  } finally {
+    client.release();
+  }
+}
+
