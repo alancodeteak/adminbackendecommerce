@@ -4,7 +4,7 @@ import { isR2Configured, storeShopImageInR2 } from "../../../../infra/media/stor
 import { publicUrlForStorageKey } from "../../../../infra/media/publicMediaUrl.js";
 import { ValidationError } from "../../../../domain/errors/ValidationError.js";
 
-export function uploadShopImage({ shopsRepo }) {
+export function uploadShopEntityImage({ shopsRepo }) {
   return async function execute(client, { shopId, file }) {
     if (!file) throw new ValidationError("Image is required");
     if (!file.buffer || !file.mimetype) throw new ValidationError("Invalid image");
@@ -21,15 +21,18 @@ export function uploadShopImage({ shopsRepo }) {
           uploadsDir: env.UPLOADS_DIR
         });
 
-    await shopsRepo.upsertShopImage(client, { shopId, media });
+    const { entityImage } = await shopsRepo.upsertShopEntityImage(client, { shopId, media });
 
     const publicUrl = publicUrlForStorageKey(media.storageKey);
     return {
-      storageKey: media.storageKey,
-      url: publicUrl || `/${media.storageKey}`,
-      sha256: media.sha256,
-      contentType: media.contentType,
-      byteSize: media.byteSize
+      entityImage,
+      mediaAsset: {
+        storageKey: media.storageKey,
+        url: publicUrl || `/${media.storageKey}`,
+        sha256: media.sha256,
+        contentType: media.contentType,
+        byteSize: media.byteSize
+      }
     };
   };
 }

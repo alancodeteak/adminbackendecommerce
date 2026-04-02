@@ -3,7 +3,8 @@ import { ShopsRepoPg } from "../../../adapters/repositories/postgres/ShopsRepoPg
 import { listShops as listShopsUcFactory } from "../../../application/usecases/superadmin/shops/listShops.js";
 import { getShop as getShopUcFactory } from "../../../application/usecases/superadmin/shops/getShop.js";
 import { createShop as createShopUcFactory } from "../../../application/usecases/superadmin/shops/createShop.js";
-import { uploadShopImage as uploadShopImageUcFactory } from "../../../application/usecases/superadmin/shops/uploadShopImage.js";
+import { updateShop as updateShopUcFactory } from "../../../application/usecases/superadmin/shops/updateShop.js";
+import { uploadShopEntityImage as uploadShopEntityImageUcFactory } from "../../../application/usecases/superadmin/shops/uploadShopImage.js";
 import { publicUrlForStorageKey } from "../../../infra/media/publicMediaUrl.js";
 import { NotFoundError } from "../../../domain/errors/NotFoundError.js";
 
@@ -11,7 +12,8 @@ const shopsRepo = new ShopsRepoPg();
 const listShopsUc = listShopsUcFactory({ shopsRepo });
 const getShopUc = getShopUcFactory({ shopsRepo });
 const createShopUc = createShopUcFactory({ shopsRepo });
-const uploadShopImageUc = uploadShopImageUcFactory({ shopsRepo });
+const updateShopUc = updateShopUcFactory({ shopsRepo });
+const uploadShopEntityImageUc = uploadShopEntityImageUcFactory({ shopsRepo });
 
 export async function list(req, res, next) {
   try {
@@ -136,15 +138,32 @@ export async function create(req, res, next) {
   }
 }
 
-export async function uploadImage(req, res, next) {
+export async function patchShop(req, res, next) {
+  try {
+    const shopRow = await withTx(async (client) => {
+      return await updateShopUc(client, { id: req.params.id, patch: req.body });
+    });
+    res.json({
+      success: true,
+      data: {
+        shop: serializeShopDetail(shopRow)
+      }
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function uploadShopEntityImage(req, res, next) {
   try {
     const result = await withTx(async (client) => {
-      return await uploadShopImageUc(client, { shopId: req.params.id, file: req.file });
+      return await uploadShopEntityImageUc(client, { shopId: req.params.id, file: req.file });
     });
     res.status(201).json({
       success: true,
       data: {
-        image: result
+        entityImage: result.entityImage,
+        mediaAsset: result.mediaAsset
       }
     });
   } catch (err) {

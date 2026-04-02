@@ -61,3 +61,32 @@ export const shopIdParamsSchema = z.object({
   id: z.string().uuid()
 });
 
+/** Partial update — at least one field required (after strip). */
+export const updateShopBodySchema = z
+  .object({
+    slug: slugSchema.transform((s) => s.toLowerCase()).optional(),
+    name: z.string().trim().min(1).max(160).optional(),
+    customDomain: z
+      .union([z.null(), z.literal(""), customDomainSchema])
+      .optional()
+      .transform((v) => (v === undefined ? undefined : v === "" || v === null ? null : v)),
+    phone: z
+      .union([z.null(), z.literal(""), phoneSchema])
+      .optional()
+      .transform((v) => (v === undefined ? undefined : v === "" || v === null ? null : v)),
+    email: z
+      .union([z.null(), z.literal(""), z.string().trim().email().max(254)])
+      .optional()
+      .transform((v) => (v === undefined ? undefined : v === "" || v === null ? null : v)),
+    ownerUserId: z.union([z.string().uuid(), z.null()]).optional(),
+    isActive: z.boolean().optional(),
+    status: z.enum(["active", "blocked", "deleted"]).optional(),
+    isBlocked: z.boolean().optional(),
+    isDeleted: z.boolean().optional(),
+    address: addressSchema.optional()
+  })
+  .strict()
+  .refine((obj) => Object.keys(obj).length > 0, {
+    message: "At least one field is required"
+  });
+

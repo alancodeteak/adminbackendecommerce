@@ -1,6 +1,15 @@
 import { ShopsRepo } from "../../../application/ports/repositories/ShopsRepo.js";
 import { ConflictError } from "../../../domain/errors/ConflictError.js";
 
+function addressHasContent(a) {
+  if (!a || typeof a !== "object") return false;
+  return Object.values(a).some((v) => {
+    if (v === null || v === undefined) return false;
+    if (typeof v === "number") return true;
+    return String(v).trim() !== "";
+  });
+}
+
 export class ShopsRepoPg extends ShopsRepo {
   async list(client, { search, limit, offset }) {
     const where = ["s.is_active = true"];
@@ -115,8 +124,114 @@ export class ShopsRepoPg extends ShopsRepo {
     }
   }
 
-  async upsertShopImage(client, { shopId, media }) {
-    // entity_images is protected by RLS; set tenant context to the shop.
+  async updateShop(client, shopId, patch) {
+    const cur = await client.query(`select address_id from shops where id = $1`, [shopId]);
+    if (!cur.rows[0]) return null;
+    let addressId = cur.rows[0].address_id;
+
+    if (patch.address !== undefined) {
+      const a = patch.address;
+      if (addressId) {
+        await client.query(
+          `update addresses set
+            line1 = $1, line2 = $2, landmark = $3, city = $4, state = $5,
+            postal_code = $6, country = $7, lat = $8, lng = $9, raw = $10,
+            updated_at = now()
+          where id = $11`,
+          [
+            a.line1 ?? null,
+            a.line2 ?? null,
+            a.landmark ?? null,
+            a.city ?? null,
+            a.state ?? null,
+            a.postal_code ?? null,
+            a.country ?? null,
+            a.lat ?? null,
+            a.lng ?? null,
+            a.raw ?? null,
+            addressId
+          ]
+        );
+      } else if (addressHasContent(a)) {
+        const ins = await client.query(
+          `insert into addresses (line1, line2, landmark, city, state, postal_code, country, lat, lng, raw)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) returning id`,
+          [
+            a.line1 ?? null,
+            a.line2 ?? null,
+            a.landmark ?? null,
+            a.city ?? null,
+            a.state ?? null,
+            a.postal_code ?? null,
+            a.country ?? null,
+            a.lat ?? null,
+            a.lng ?? null,
+            a.raw ?? null
+          ]
+        );
+        addressId = ins.rows[0].id;
+        await client.query(`update shops set address_id = $1, updated_at = now() where id = $2`, [
+          addressId,
+          shopId
+        ]);
+      }
+    }
+
+    const fragments = [];
+    const vals = [];
+    let p = 1;
+    const eq = (col, val) => {
+      fragments.push(`${col} = $${p}`);
+      vals.push(val);
+      p += 1;
+    };
+
+    if (patch.name !== undefined) eq("name", patch.name);
+    if (patch.slug !== undefined) eq("slug", patch.slug);
+    if (patch.customDomain !== undefined) eq("custom_domain", patch.customDomain);
+    if (patch.phone !== undefined) eq("phone", patch.phone);
+    if (patch.email !== undefined) eq("email", patch.email);
+    if (patch.ownerUserId !== undefined) eq("owner_user_id", patch.ownerUserId);
+    if (patch.isActive !== undefined) eq("is_active", patch.isActive);
+    if (patch.status !== undefined) eq("status", patch.status);
+    if (patch.isBlocked !== undefined) eq("is_blocked", patch.isBlocked);
+    if (patch.isDeleted !== undefined) {
+      eq("is_deleted", patch.isDeleted);
+      fragments.push(
+        patch.isDeleted ? "deleted_at = coalesce(deleted_at, now())" : "deleted_at = null"
+      );
+    }
+
+    const touchedAddress = patch.address !== undefined;
+    if (fragments.length > 0) {
+      fragments.push("updated_at = now()");
+      vals.push(shopId);
+      try {
+        await client.query(
+          `update shops set ${fragments.join(", ")} where id = $${p}`,
+          vals
+        );
+      } catch (err) {
+        if (err?.code === "23505") {
+          const c = String(err?.constraint || "");
+          if (c.includes("slug")) throw new ConflictError("Shop slug already exists");
+          if (c.includes("custom_domain")) throw new ConflictError("Shop custom domain already exists");
+          throw new ConflictError("Shop update conflicts with existing record");
+        }
+        throw err;
+      }
+    } else if (touchedAddress) {
+      await client.query(`update shops set updated_at = now() where id = $1`, [shopId]);
+    }
+
+    return this.getById(client, shopId);
+  }
+
+  /**
+   * Binds shop primary image via `entity_images` (entity_type = shop, entity_id = shop id)
+   * and links `media_assets`. Requires tenant context for RLS on `entity_images`.
+   */
+  async upsertShopEntityImage(client, { shopId, media }) {
     await client.query("select set_config('app.current_shop_id', $1, true)", [shopId]);
 
     const mediaRes = await client.query(
@@ -131,15 +246,28 @@ export class ShopsRepoPg extends ShopsRepo {
     );
     const mediaAssetId = mediaRes.rows[0].id;
 
-    await client.query(
+    const eiRes = await client.query(
       `insert into entity_images (shop_id, entity_type, entity_id, media_asset_id)
        values ($1, 'shop', $1, $2)
        on conflict (shop_id, entity_type, entity_id) do update
-       set media_asset_id = excluded.media_asset_id, updated_at = now()`,
+       set media_asset_id = excluded.media_asset_id, updated_at = now()
+       returning id, shop_id, entity_type, entity_id, media_asset_id, created_at, updated_at`,
       [shopId, mediaAssetId]
     );
+    const row = eiRes.rows[0];
 
-    return { mediaAssetId };
+    return {
+      mediaAssetId,
+      entityImage: {
+        id: row.id,
+        shopId: row.shop_id,
+        entityType: row.entity_type,
+        entityId: row.entity_id,
+        mediaAssetId: row.media_asset_id,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at
+      }
+    };
   }
 
   async getById(client, id) {

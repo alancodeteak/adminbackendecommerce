@@ -15,7 +15,13 @@ export function createServer() {
 
   app.disable("x-powered-by");
   app.use(requestLogger);
-  app.use(helmet());
+  // Allow the SPA (different origin in dev, e.g. :5173) to load /uploads in <img> and other
+  // no-cors contexts. Helmet's default CORP "same-origin" causes net::ERR_BLOCKED_BY_RESPONSE.
+  app.use(
+    helmet({
+      crossOriginResourcePolicy: { policy: "cross-origin" }
+    })
+  );
   app.use(
     cors({
       origin: env.CORS_ORIGIN,

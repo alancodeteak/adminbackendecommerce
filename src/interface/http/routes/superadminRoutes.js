@@ -11,13 +11,15 @@ import {
 import {
   createShopBodySchema,
   listShopsQuerySchema,
-  shopIdParamsSchema
+  shopIdParamsSchema,
+  updateShopBodySchema
 } from "../validations/shopsSchemas.js";
 import {
   create as createShop,
   get as getShop,
   list as listShops,
-  uploadImage as uploadShopImage
+  patchShop,
+  uploadShopEntityImage
 } from "../controllers/superadminShopsController.js";
 import { requestOtp, verifyOtp } from "../controllers/superadminOtpController.js";
 import { uploadImage } from "../middleware/uploadImage.js";
@@ -58,13 +60,20 @@ export function buildSuperadminRoutes() {
     validate({ body: createShopBodySchema }),
     createShop
   );
+  router.patch(
+    "/shops/:id",
+    requireAuth,
+    requireRole(["superadmin"]),
+    validate({ params: shopIdParamsSchema, body: updateShopBodySchema }),
+    patchShop
+  );
   router.post(
-    "/shops/:id/image",
+    "/shops/:id/entity-images",
     requireAuth,
     requireRole(["superadmin"]),
     validate({ params: shopIdParamsSchema }),
     uploadImage,
-    uploadShopImage
+    uploadShopEntityImage
   );
   router.patch(
     "/shops/:id/status",
