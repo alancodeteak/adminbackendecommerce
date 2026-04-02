@@ -4,6 +4,34 @@
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
+-- Normalized address table shared by shops/customers (and future entities).
+CREATE TABLE IF NOT EXISTS addresses (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  line1 TEXT,
+  line2 TEXT,
+  landmark TEXT,
+  city TEXT,
+  state TEXT,
+  postal_code TEXT,
+  country TEXT,
+  lat DOUBLE PRECISION,
+  lng DOUBLE PRECISION,
+  raw TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'addresses_lat_lng_bounds_chk') THEN
+    ALTER TABLE addresses
+      ADD CONSTRAINT addresses_lat_lng_bounds_chk CHECK (
+        (lat IS NULL AND lng IS NULL)
+        OR (lat BETWEEN -90 AND 90 AND lng BETWEEN -180 AND 180)
+      );
+  END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS shops (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   slug TEXT NOT NULL UNIQUE,
@@ -14,12 +42,12 @@ CREATE TABLE IF NOT EXISTS shops (
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'blocked', 'deleted')),
   phone TEXT,
   email TEXT,
-  address TEXT,
-  location JSONB,
-  timelines JSONB NOT NULL DEFAULT '{}'::jsonb,
-  actions JSONB NOT NULL DEFAULT '{}'::jsonb,
+  address_id UUID REFERENCES addresses(id) ON DELETE SET NULL,
+  is_blocked BOOLEAN NOT NULL DEFAULT false,
+  is_deleted BOOLEAN NOT NULL DEFAULT false,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  deleted_at TIMESTAMPTZ
 );
 
 -- Basic data hygiene / limits (not overly strict to avoid blocking real-world values).
@@ -39,28 +67,6 @@ BEGIN
   END IF;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'shops_email_len_chk') THEN
     ALTER TABLE shops ADD CONSTRAINT shops_email_len_chk CHECK (email IS NULL OR char_length(email) <= 254);
-  END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'shops_address_len_chk') THEN
-    ALTER TABLE shops ADD CONSTRAINT shops_address_len_chk CHECK (address IS NULL OR char_length(address) <= 600);
-  END IF;
-END $$;
-
--- location must be either NULL or {"lat": number, "lng": number} within bounds.
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'shops_location_shape_chk') THEN
-    ALTER TABLE shops
-      ADD CONSTRAINT shops_location_shape_chk CHECK (
-        location IS NULL
-        OR (
-          jsonb_typeof(location) = 'object'
-          AND (location ? 'lat') AND (location ? 'lng')
-          AND jsonb_typeof(location->'lat') = 'number'
-          AND jsonb_typeof(location->'lng') = 'number'
-          AND (location->>'lat')::double precision BETWEEN -90 AND 90
-          AND (location->>'lng')::double precision BETWEEN -180 AND 180
-        )
-      );
   END IF;
 END $$;
 
@@ -194,9 +200,12 @@ CREATE TABLE IF NOT EXISTS customers (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID UNIQUE REFERENCES users(id) ON DELETE CASCADE,
   display_name TEXT,
-  address TEXT,
-  actions JSONB NOT NULL DEFAULT '{}'::jsonb,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  address_id UUID REFERENCES addresses(id) ON DELETE SET NULL,
+  is_blocked BOOLEAN NOT NULL DEFAULT false,
+  is_deleted BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  deleted_at TIMESTAMPTZ
 );
 
 DO $$
@@ -206,10 +215,137 @@ BEGIN
       ADD CONSTRAINT customers_display_name_len_chk
       CHECK (display_name IS NULL OR char_length(display_name) <= 120);
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'customers_address_len_chk') THEN
+END $$;
+
+-- Backfill: migrate legacy `shops.address`/`shops.location` and `customers.address` into `addresses`.
+-- This block is safe to re-run (only fills when *_address_id is NULL).
+DO $$
+DECLARE
+  r_shop RECORD;
+  r_cust RECORD;
+  new_addr_id UUID;
+  loc_lat DOUBLE PRECISION;
+  loc_lng DOUBLE PRECISION;
+BEGIN
+  -- Ensure columns exist if this script runs against a DB created before the change.
+  ALTER TABLE shops ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN NOT NULL DEFAULT false;
+  ALTER TABLE shops ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN NOT NULL DEFAULT false;
+  ALTER TABLE shops ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+  ALTER TABLE shops ADD COLUMN IF NOT EXISTS address_id UUID;
+
+  ALTER TABLE customers ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN NOT NULL DEFAULT false;
+  ALTER TABLE customers ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN NOT NULL DEFAULT false;
+  ALTER TABLE customers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+  ALTER TABLE customers ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+  ALTER TABLE customers ADD COLUMN IF NOT EXISTS address_id UUID;
+
+  IF to_regclass('public.shop_staff') IS NOT NULL THEN
+    ALTER TABLE shop_staff ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN NOT NULL DEFAULT false;
+    ALTER TABLE shop_staff ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN NOT NULL DEFAULT false;
+    ALTER TABLE shop_staff ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now();
+    ALTER TABLE shop_staff ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+    ALTER TABLE shop_staff ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+  END IF;
+
+  IF to_regclass('public.customer_shop_memberships') IS NOT NULL THEN
+    ALTER TABLE customer_shop_memberships ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN NOT NULL DEFAULT false;
+    ALTER TABLE customer_shop_memberships ADD COLUMN IF NOT EXISTS is_deleted BOOLEAN NOT NULL DEFAULT false;
+    ALTER TABLE customer_shop_memberships ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+    ALTER TABLE customer_shop_memberships ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ;
+  END IF;
+
+  -- Best-effort backfill for shops based on existing `status` semantics.
+  UPDATE shops
+    SET is_blocked = (status = 'blocked'),
+        is_deleted = (status = 'deleted')
+    WHERE (is_blocked = false OR is_deleted = false)
+      AND status IN ('blocked', 'deleted');
+
+  UPDATE shops
+    SET deleted_at = COALESCE(deleted_at, updated_at, now())
+    WHERE is_deleted = true AND deleted_at IS NULL;
+
+  -- Add FKs if missing (idempotent).
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'shops_address_id_fkey') THEN
+    ALTER TABLE shops
+      ADD CONSTRAINT shops_address_id_fkey
+      FOREIGN KEY (address_id) REFERENCES addresses(id) ON DELETE SET NULL;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'customers_address_id_fkey') THEN
     ALTER TABLE customers
-      ADD CONSTRAINT customers_address_len_chk
-      CHECK (address IS NULL OR char_length(address) <= 600);
+      ADD CONSTRAINT customers_address_id_fkey
+      FOREIGN KEY (address_id) REFERENCES addresses(id) ON DELETE SET NULL;
+  END IF;
+
+  -- Shops: if legacy columns exist, move values into addresses.
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'shops' AND column_name = 'address'
+  ) THEN
+    FOR r_shop IN
+      EXECUTE 'SELECT id, address, location FROM shops WHERE address_id IS NULL AND (address IS NOT NULL OR location IS NOT NULL)'
+    LOOP
+      loc_lat := NULL;
+      loc_lng := NULL;
+      IF r_shop.location IS NOT NULL THEN
+        BEGIN
+          loc_lat := NULLIF((r_shop.location->>''lat''), '''')::double precision;
+          loc_lng := NULLIF((r_shop.location->>''lng''), '''')::double precision;
+        EXCEPTION WHEN others THEN
+          loc_lat := NULL;
+          loc_lng := NULL;
+        END;
+      END IF;
+
+      INSERT INTO addresses (raw, lat, lng)
+      VALUES (r_shop.address, loc_lat, loc_lng)
+      RETURNING id INTO new_addr_id;
+
+      UPDATE shops SET address_id = new_addr_id WHERE id = r_shop.id;
+    END LOOP;
+  END IF;
+
+  -- Customers: if legacy column exists, move values into addresses.
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'customers' AND column_name = 'address'
+  ) THEN
+    FOR r_cust IN
+      EXECUTE 'SELECT id, address FROM customers WHERE address_id IS NULL AND address IS NOT NULL'
+    LOOP
+      INSERT INTO addresses (raw)
+      VALUES (r_cust.address)
+      RETURNING id INTO new_addr_id;
+
+      UPDATE customers SET address_id = new_addr_id WHERE id = r_cust.id;
+    END LOOP;
+  END IF;
+
+  -- Drop legacy constraints/columns if present (safe for fresh installs + upgrades).
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'shops_address_len_chk') THEN
+    ALTER TABLE shops DROP CONSTRAINT shops_address_len_chk;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'shops_location_shape_chk') THEN
+    ALTER TABLE shops DROP CONSTRAINT shops_location_shape_chk;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'customers_address_len_chk') THEN
+    ALTER TABLE customers DROP CONSTRAINT customers_address_len_chk;
+  END IF;
+
+  ALTER TABLE shops DROP COLUMN IF EXISTS address;
+  ALTER TABLE shops DROP COLUMN IF EXISTS location;
+  ALTER TABLE customers DROP COLUMN IF EXISTS address;
+
+  -- Drop JSONB columns after adding explicit fields.
+  ALTER TABLE shops DROP COLUMN IF EXISTS timelines;
+  ALTER TABLE shops DROP COLUMN IF EXISTS actions;
+  ALTER TABLE customers DROP COLUMN IF EXISTS actions;
+  IF to_regclass('public.shop_staff') IS NOT NULL THEN
+    ALTER TABLE shop_staff DROP COLUMN IF EXISTS timelines;
+    ALTER TABLE shop_staff DROP COLUMN IF EXISTS actions;
+  END IF;
+  IF to_regclass('public.customer_shop_memberships') IS NOT NULL THEN
+    ALTER TABLE customer_shop_memberships DROP COLUMN IF EXISTS actions;
   END IF;
 END $$;
 
@@ -221,8 +357,11 @@ CREATE TABLE IF NOT EXISTS shop_staff (
   is_active BOOLEAN NOT NULL DEFAULT true,
   display_name TEXT,
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'blocked', 'deleted')),
-  timelines JSONB NOT NULL DEFAULT '{}'::jsonb,
-  actions JSONB NOT NULL DEFAULT '{}'::jsonb,
+  is_blocked BOOLEAN NOT NULL DEFAULT false,
+  is_deleted BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  deleted_at TIMESTAMPTZ,
   UNIQUE (shop_id, user_id)
 );
 
@@ -240,8 +379,11 @@ CREATE TABLE IF NOT EXISTS customer_shop_memberships (
   shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
   customer_id UUID NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
   is_active BOOLEAN NOT NULL DEFAULT true,
-  actions JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  is_blocked BOOLEAN NOT NULL DEFAULT false,
+  is_deleted BOOLEAN NOT NULL DEFAULT false,
+  deleted_at TIMESTAMPTZ,
   UNIQUE (shop_id, customer_id)
 );
 

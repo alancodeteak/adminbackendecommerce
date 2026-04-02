@@ -28,7 +28,21 @@ const envSchema = z.object({
   OTP_TTL_MINUTES: z.coerce.number().int().positive().default(5),
   OTP_MAX_ATTEMPTS: z.coerce.number().int().min(1).default(5),
   OTP_REQUEST_COOLDOWN_SECONDS: z.coerce.number().int().min(0).default(30),
-  OTP_DEBUG_LOG: z.preprocess((v) => (v === "true" ? true : v === "false" ? false : v), z.boolean()).default(false)
+  OTP_DEBUG_LOG: z.preprocess((v) => (v === "true" ? true : v === "false" ? false : v), z.boolean()).default(false),
+
+  // Media uploads (local storage)
+  UPLOADS_DIR: z.string().min(1).default("uploads"),
+
+  // Cloudflare R2 / S3-compatible object storage (optional — if BUCKET is set, endpoint + keys required)
+  OBJECT_STORAGE_ACCESS_KEY_ID: z.string().optional().default(""),
+  OBJECT_STORAGE_SECRET_ACCESS_KEY: z.string().optional().default(""),
+  OBJECT_STORAGE_ENDPOINT: z.string().optional().default(""),
+  OBJECT_STORAGE_BUCKET: z.string().optional().default(""),
+  /** Public origin for objects (R2 custom domain or r2.dev public bucket URL), no trailing slash */
+  OBJECT_STORAGE_PUBLIC_BASE_URL: z.string().optional().default(""),
+  OBJECT_STORAGE_REGION: z.string().optional().default("auto"),
+  /** Optional Cloudflare API token (Workers / account API — not used for S3 PutObject) */
+  CLOUDFLARE_API_TOKEN: z.string().optional().default("")
 }).superRefine((val, ctx) => {
   if (val.NODE_ENV === "production" && val.JWT_SECRET === "dev_only_change_me_please") {
     ctx.addIssue({
@@ -36,6 +50,29 @@ const envSchema = z.object({
       path: ["JWT_SECRET"],
       message: "JWT_SECRET must be set in production"
     });
+  }
+  if (val.OBJECT_STORAGE_BUCKET?.trim()) {
+    if (!val.OBJECT_STORAGE_ENDPOINT?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["OBJECT_STORAGE_ENDPOINT"],
+        message: "OBJECT_STORAGE_ENDPOINT is required when OBJECT_STORAGE_BUCKET is set"
+      });
+    }
+    if (!val.OBJECT_STORAGE_ACCESS_KEY_ID?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["OBJECT_STORAGE_ACCESS_KEY_ID"],
+        message: "OBJECT_STORAGE_ACCESS_KEY_ID is required when OBJECT_STORAGE_BUCKET is set"
+      });
+    }
+    if (!val.OBJECT_STORAGE_SECRET_ACCESS_KEY?.trim()) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["OBJECT_STORAGE_SECRET_ACCESS_KEY"],
+        message: "OBJECT_STORAGE_SECRET_ACCESS_KEY is required when OBJECT_STORAGE_BUCKET is set"
+      });
+    }
   }
 });
 

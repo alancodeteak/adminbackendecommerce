@@ -8,9 +8,19 @@ import {
   superadminOtpRequestBodySchema,
   superadminOtpVerifyBodySchema
 } from "../validations/authSchemas.js";
-import { listShopsQuerySchema, shopIdParamsSchema } from "../validations/shopsSchemas.js";
-import { get as getShop, list as listShops } from "../controllers/superadminShopsController.js";
+import {
+  createShopBodySchema,
+  listShopsQuerySchema,
+  shopIdParamsSchema
+} from "../validations/shopsSchemas.js";
+import {
+  create as createShop,
+  get as getShop,
+  list as listShops,
+  uploadImage as uploadShopImage
+} from "../controllers/superadminShopsController.js";
 import { requestOtp, verifyOtp } from "../controllers/superadminOtpController.js";
+import { uploadImage } from "../middleware/uploadImage.js";
 
 export function buildSuperadminRoutes() {
   const router = Router();
@@ -41,7 +51,21 @@ export function buildSuperadminRoutes() {
     validate({ params: shopIdParamsSchema }),
     getShop
   );
-  router.post("/shops", requireAuth, requireRole(["superadmin"]), (_req, res) => res.status(201).json({ id: null }));
+  router.post(
+    "/shops",
+    requireAuth,
+    requireRole(["superadmin"]),
+    validate({ body: createShopBodySchema }),
+    createShop
+  );
+  router.post(
+    "/shops/:id/image",
+    requireAuth,
+    requireRole(["superadmin"]),
+    validate({ params: shopIdParamsSchema }),
+    uploadImage,
+    uploadShopImage
+  );
   router.patch(
     "/shops/:id/status",
     requireAuth,

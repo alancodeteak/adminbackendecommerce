@@ -8,6 +8,7 @@ import { createPerf } from "../infra/perf/perf.js";
 import { buildRoutes } from "./routes.js";
 import { notFound } from "../interface/http/middleware/notFound.js";
 import { errorHandler } from "../interface/http/middleware/errorHandler.js";
+import path from "path";
 
 export function createServer() {
   const app = express();
@@ -33,6 +34,8 @@ export function createServer() {
       limit: 300
     })
   );
+
+  app.use("/uploads", express.static(path.resolve(env.UPLOADS_DIR)));
 
   app.use(buildRoutes());
 
