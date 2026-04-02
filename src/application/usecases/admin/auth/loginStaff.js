@@ -6,7 +6,7 @@ import { signAccessToken } from "../../../../infra/auth/jwt.js";
 export function loginStaff({ authRepo }) {
   return async function execute(client, { email, password, shopSlug }) {
     const shop = await authRepo.getShopBySlug(client, shopSlug);
-    if (!shop || !shop.is_active) throw new AuthError("Invalid shop");
+    if (!shop || !shop.is_active || shop.status !== "active") throw new AuthError("Invalid shop");
 
     const user = await authRepo.getUserByEmail(client, email);
     if (!user || !user.is_active) throw new AuthError("Invalid credentials");

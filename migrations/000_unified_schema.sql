@@ -1,4 +1,5 @@
 -- Unified PostgreSQL deployment script for the multi-tenant ecommerce schema.
+-- This replaces split migrations 001..005 for fresh environment provisioning.
 -- Includes RLS tenant isolation + outbox table.
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
@@ -9,25 +10,57 @@ CREATE TABLE IF NOT EXISTS shops (
   name TEXT NOT NULL,
   custom_domain TEXT UNIQUE,
   is_active BOOLEAN NOT NULL DEFAULT true,
+  -- Operational details (kept flexible but constrained)
   status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'blocked', 'deleted')),
-  created_by_superadmin_user_id UUID,
-  approved_at TIMESTAMPTZ,
-  blocked_reason TEXT,
+  phone TEXT,
+  email TEXT,
+  address TEXT,
+  location JSONB,
+  timelines JSONB NOT NULL DEFAULT '{}'::jsonb,
+  actions JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Link shops.created_by_superadmin_user_id to users (optional).
+-- Basic data hygiene / limits (not overly strict to avoid blocking real-world values).
 DO $$
 BEGIN
-  IF NOT EXISTS (
-    SELECT 1
-    FROM pg_constraint
-    WHERE conname = 'shops_created_by_superadmin_user_id_fkey'
-  ) THEN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'shops_slug_len_chk') THEN
+    ALTER TABLE shops ADD CONSTRAINT shops_slug_len_chk CHECK (char_length(slug) BETWEEN 1 AND 64);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'shops_name_len_chk') THEN
+    ALTER TABLE shops ADD CONSTRAINT shops_name_len_chk CHECK (char_length(name) BETWEEN 1 AND 160);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'shops_custom_domain_len_chk') THEN
+    ALTER TABLE shops ADD CONSTRAINT shops_custom_domain_len_chk CHECK (custom_domain IS NULL OR char_length(custom_domain) <= 255);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'shops_phone_len_chk') THEN
+    ALTER TABLE shops ADD CONSTRAINT shops_phone_len_chk CHECK (phone IS NULL OR char_length(phone) <= 32);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'shops_email_len_chk') THEN
+    ALTER TABLE shops ADD CONSTRAINT shops_email_len_chk CHECK (email IS NULL OR char_length(email) <= 254);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'shops_address_len_chk') THEN
+    ALTER TABLE shops ADD CONSTRAINT shops_address_len_chk CHECK (address IS NULL OR char_length(address) <= 600);
+  END IF;
+END $$;
+
+-- location must be either NULL or {"lat": number, "lng": number} within bounds.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'shops_location_shape_chk') THEN
     ALTER TABLE shops
-      ADD CONSTRAINT shops_created_by_superadmin_user_id_fkey
-      FOREIGN KEY (created_by_superadmin_user_id) REFERENCES users(id) ON DELETE SET NULL;
+      ADD CONSTRAINT shops_location_shape_chk CHECK (
+        location IS NULL
+        OR (
+          jsonb_typeof(location) = 'object'
+          AND (location ? 'lat') AND (location ? 'lng')
+          AND jsonb_typeof(location->'lat') = 'number'
+          AND jsonb_typeof(location->'lng') = 'number'
+          AND (location->>'lat')::double precision BETWEEN -90 AND 90
+          AND (location->>'lng')::double precision BETWEEN -180 AND 180
+        )
+      );
   END IF;
 END $$;
 
@@ -79,8 +112,72 @@ CREATE TABLE IF NOT EXISTS users (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Platform identity (superadmins) is separated from tenant staff membership.
--- A superadmin is a user with platform-level capabilities.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_email_len_chk') THEN
+    ALTER TABLE users ADD CONSTRAINT users_email_len_chk CHECK (email IS NULL OR char_length(email) <= 254);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_phone_len_chk') THEN
+    ALTER TABLE users ADD CONSTRAINT users_phone_len_chk CHECK (phone IS NULL OR char_length(phone) <= 32);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_email_format_chk') THEN
+    ALTER TABLE users
+      ADD CONSTRAINT users_email_format_chk
+      CHECK (email IS NULL OR email ~* '^[A-Z0-9._%+\\-]+@[A-Z0-9.\\-]+\\.[A-Z]{2,}$');
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_phone_format_chk') THEN
+    ALTER TABLE users
+      ADD CONSTRAINT users_phone_format_chk
+      CHECK (phone IS NULL OR phone ~ '^[0-9+][0-9]{7,31}$');
+  END IF;
+END $$;
+
+-- Stricter format checks for shop-facing identifiers.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'shops_slug_format_chk') THEN
+    ALTER TABLE shops
+      ADD CONSTRAINT shops_slug_format_chk
+      CHECK (slug ~ '^[a-z0-9]+(?:-[a-z0-9]+)*$');
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'shops_email_format_chk') THEN
+    ALTER TABLE shops
+      ADD CONSTRAINT shops_email_format_chk
+      CHECK (email IS NULL OR email ~* '^[A-Z0-9._%+\\-]+@[A-Z0-9.\\-]+\\.[A-Z]{2,}$');
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'shops_phone_format_chk') THEN
+    ALTER TABLE shops
+      ADD CONSTRAINT shops_phone_format_chk
+      CHECK (phone IS NULL OR phone ~ '^[0-9+][0-9]{7,31}$');
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'shops_custom_domain_format_chk') THEN
+    ALTER TABLE shops
+      ADD CONSTRAINT shops_custom_domain_format_chk
+      CHECK (
+        custom_domain IS NULL
+        OR custom_domain ~* '^[A-Z0-9](?:[A-Z0-9\\-]{0,61}[A-Z0-9])?(?:\\.[A-Z0-9](?:[A-Z0-9\\-]{0,61}[A-Z0-9])?)+$'
+      );
+  END IF;
+END $$;
+
+-- Optional linkage from shop -> primary owner account (keeps password in `users`).
+ALTER TABLE shops
+  ADD COLUMN IF NOT EXISTS owner_user_id UUID;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'shops_owner_user_id_fkey'
+  ) THEN
+    ALTER TABLE shops
+      ADD CONSTRAINT shops_owner_user_id_fkey
+      FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE SET NULL;
+  END IF;
+END $$;
+
+-- Platform identity (Option A): a superadmin is a user with platform-level capabilities.
 CREATE TABLE IF NOT EXISTS superadmins (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
@@ -92,23 +189,53 @@ CREATE TABLE IF NOT EXISTS customers (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID UNIQUE REFERENCES users(id) ON DELETE CASCADE,
   display_name TEXT,
+  address TEXT,
+  actions JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'customers_display_name_len_chk') THEN
+    ALTER TABLE customers
+      ADD CONSTRAINT customers_display_name_len_chk
+      CHECK (display_name IS NULL OR char_length(display_name) <= 120);
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'customers_address_len_chk') THEN
+    ALTER TABLE customers
+      ADD CONSTRAINT customers_address_len_chk
+      CHECK (address IS NULL OR char_length(address) <= 600);
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS shop_staff (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  role TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'manager', 'picker')),
   is_active BOOLEAN NOT NULL DEFAULT true,
+  display_name TEXT,
+  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'blocked', 'deleted')),
+  timelines JSONB NOT NULL DEFAULT '{}'::jsonb,
+  actions JSONB NOT NULL DEFAULT '{}'::jsonb,
   UNIQUE (shop_id, user_id)
 );
+
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'shop_staff_display_name_len_chk') THEN
+    ALTER TABLE shop_staff
+      ADD CONSTRAINT shop_staff_display_name_len_chk
+      CHECK (display_name IS NULL OR char_length(display_name) <= 120);
+  END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS customer_shop_memberships (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
   customer_id UUID NOT NULL REFERENCES customers(id) ON DELETE CASCADE,
   is_active BOOLEAN NOT NULL DEFAULT true,
+  actions JSONB NOT NULL DEFAULT '{}'::jsonb,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (shop_id, customer_id)
 );
@@ -188,6 +315,29 @@ CREATE INDEX IF NOT EXISTS idx_outbox_messages_pending_created
   ON outbox_messages (created_at)
   WHERE published_at IS NULL;
 
+-- Deduplicated media blobs and tenant-bound image bindings.
+CREATE TABLE IF NOT EXISTS media_assets (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  sha256 CHAR(64) NOT NULL UNIQUE,
+  storage_key TEXT NOT NULL UNIQUE,
+  content_type TEXT NOT NULL,
+  byte_size BIGINT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS entity_images (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  shop_id UUID NOT NULL REFERENCES shops(id) ON DELETE CASCADE,
+  entity_type TEXT NOT NULL CHECK (entity_type IN ('shop', 'product', 'picker')),
+  entity_id UUID NOT NULL,
+  media_asset_id UUID NOT NULL REFERENCES media_assets(id) ON DELETE RESTRICT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (shop_id, entity_type, entity_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_entity_images_media_asset ON entity_images(media_asset_id);
+
 -- RLS for tenant isolation.
 CREATE SCHEMA IF NOT EXISTS app;
 
@@ -207,6 +357,7 @@ ALTER TABLE carts ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cart_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE orders ENABLE ROW LEVEL SECURITY;
 ALTER TABLE order_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE entity_images ENABLE ROW LEVEL SECURITY;
 
 DROP POLICY IF EXISTS categories_tenant_isolation ON categories;
 CREATE POLICY categories_tenant_isolation ON categories
@@ -262,6 +413,11 @@ WITH CHECK (
   )
 );
 
+DROP POLICY IF EXISTS entity_images_tenant_isolation ON entity_images;
+CREATE POLICY entity_images_tenant_isolation ON entity_images
+USING (shop_id = app.current_shop_uuid())
+WITH CHECK (shop_id = app.current_shop_uuid());
+
 ALTER TABLE categories FORCE ROW LEVEL SECURITY;
 ALTER TABLE products FORCE ROW LEVEL SECURITY;
 ALTER TABLE inventory_items FORCE ROW LEVEL SECURITY;
@@ -270,4 +426,4 @@ ALTER TABLE carts FORCE ROW LEVEL SECURITY;
 ALTER TABLE cart_items FORCE ROW LEVEL SECURITY;
 ALTER TABLE orders FORCE ROW LEVEL SECURITY;
 ALTER TABLE order_items FORCE ROW LEVEL SECURITY;
-
+ALTER TABLE entity_images FORCE ROW LEVEL SECURITY;

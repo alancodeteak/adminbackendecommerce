@@ -48,9 +48,13 @@ export async function get(req, res, next) {
         customDomain: shop.custom_domain,
         isActive: shop.is_active,
         status: shop.status,
-        createdBySuperadminUserId: shop.created_by_superadmin_user_id,
-        approvedAt: shop.approved_at,
-        blockedReason: shop.blocked_reason,
+        phone: shop.phone,
+        email: shop.email,
+        address: shop.address,
+        location: shop.location,
+        ownerUserId: shop.owner_user_id,
+        timelines: shop.timelines,
+        actions: shop.actions,
         createdAt: shop.created_at,
         updatedAt: shop.updated_at
       }

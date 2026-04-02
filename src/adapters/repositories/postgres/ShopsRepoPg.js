@@ -53,9 +53,13 @@ export class ShopsRepoPg extends ShopsRepo {
         custom_domain,
         is_active,
         status,
-        created_by_superadmin_user_id,
-        approved_at,
-        blocked_reason,
+        phone,
+        email,
+        address,
+        location,
+        owner_user_id,
+        timelines,
+        actions,
         created_at,
         updated_at
       from shops

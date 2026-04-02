@@ -3,7 +3,7 @@ import { AuthRepo } from "../../../application/ports/repositories/AuthRepo.js";
 export class AuthRepoPg extends AuthRepo {
   async getShopBySlug(client, slug) {
     const result = await client.query(
-      "select id, slug, name, is_active from shops where slug = $1 limit 1",
+      "select id, slug, name, is_active, status from shops where slug = $1 limit 1",
       [slug]
     );
     return result.rows[0] || null;
@@ -23,7 +23,10 @@ export class AuthRepoPg extends AuthRepo {
     const result = await client.query(
       `select role
        from shop_staff
-       where shop_id = $1 and user_id = $2 and is_active = true
+       where shop_id = $1
+         and user_id = $2
+         and is_active = true
+         and status = 'active'
        limit 1`,
       [shopId, userId]
     );
