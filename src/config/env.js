@@ -27,7 +27,8 @@ const envSchema = z.object({
   // OTP settings
   OTP_TTL_MINUTES: z.coerce.number().int().positive().default(5),
   OTP_MAX_ATTEMPTS: z.coerce.number().int().min(1).default(5),
-  OTP_REQUEST_COOLDOWN_SECONDS: z.coerce.number().int().min(0).default(30)
+  OTP_REQUEST_COOLDOWN_SECONDS: z.coerce.number().int().min(0).default(30),
+  OTP_DEBUG_LOG: z.preprocess((v) => (v === "true" ? true : v === "false" ? false : v), z.boolean()).default(false)
 }).superRefine((val, ctx) => {
   if (val.NODE_ENV === "production" && val.JWT_SECRET === "dev_only_change_me_please") {
     ctx.addIssue({

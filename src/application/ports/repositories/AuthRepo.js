@@ -18,5 +18,20 @@ export class AuthRepo {
   async getActiveSuperadmin(_client, _userId) {
     throw new Error("Not implemented");
   }
+
+  // eslint-disable-next-line no-unused-vars
+  async setSuperadminOtp(_client, _params) {
+    throw new Error("Not implemented");
+  }
+
+  // eslint-disable-next-line no-unused-vars
+  async markSuperadminOtpUsed(_client, _userId) {
+    throw new Error("Not implemented");
+  }
+
+  // eslint-disable-next-line no-unused-vars
+  async incrementSuperadminOtpAttempts(_client, _userId) {
+    throw new Error("Not implemented");
+  }
 }
 

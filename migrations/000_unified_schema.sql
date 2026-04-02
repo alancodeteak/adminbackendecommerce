@@ -182,6 +182,11 @@ CREATE TABLE IF NOT EXISTS superadmins (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL UNIQUE REFERENCES users(id) ON DELETE CASCADE,
   is_active BOOLEAN NOT NULL DEFAULT true,
+  otp_hash TEXT,
+  otp_expires_at TIMESTAMPTZ,
+  otp_used_at TIMESTAMPTZ,
+  otp_attempts INT NOT NULL DEFAULT 0,
+  otp_last_sent_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
